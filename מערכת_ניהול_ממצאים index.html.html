@@ -268,6 +268,7 @@
   </div>
   <div class="header-actions">
     <button class="btn btn-outline btn-sm" onclick="exportCSV()">📥 ייצוא CSV</button>
+    <button class="btn btn-outline btn-sm" onclick="sendReminders()" style="background:#fff3cd;color:#856404;border-color:#ffc107;">🔔 שלח תזכורות</button>
     <button class="btn btn-outline btn-sm" onclick="document.getElementById('kobo-import-input').click()">📂 יבוא מ-Kobo</button>
     <input type="file" id="kobo-import-input" accept=".xlsx,.xls" style="display:none" onchange="importFromKobo(this)">
     <button class="btn btn-primary" onclick="openNewFinding()">+ ממצא חדש</button>
@@ -763,11 +764,23 @@ function openDetail(id) {
 
   document.getElementById('detail-footer').innerHTML = `
     <button class="btn btn-warning" onclick="openUpdate('${f.id}');closeModal('modal-detail')">🔄 עדכן סטטוס</button>
+    <button class="btn btn-primary" onclick="resendFinding('${f.id}')">📧 שלח מחדש</button>
     <button class="btn btn-danger btn-sm" onclick="deleteFinding('${f.id}')">🗑 מחק</button>
     <button class="btn btn-outline btn-sm" style="background:#f0f4f8;color:var(--text);" onclick="closeModal('modal-detail')">סגור</button>
   `;
 
   document.getElementById('modal-detail').classList.add('open');
+}
+
+function resendFinding(id) {
+  const f = findings.find(x => x.id === id);
+  if (!f) return;
+  if (!f.recipients || f.recipients.length === 0) {
+    showToast('⚠️ אין נמענים מוגדרים לממצא זה');
+    return;
+  }
+  closeModal('modal-detail');
+  sendFindingEmails(f);
 }
 
 function deleteFinding(id) {
@@ -854,6 +867,73 @@ function saveStatusUpdate() {
 // ══════════════════════════════════════════
 // EXPORT CSV
 // ══════════════════════════════════════════
+// ══════════════════════════════════════════
+// SEND REMINDERS
+// ══════════════════════════════════════════
+async function sendReminders() {
+  const EMAILJS_SERVICE  = 'service_j252uce';
+  const EMAILJS_TEMPLATE = 'template_j4gf816';
+  const DAYS_THRESHOLD = 7;
+
+  const now = new Date();
+  const overdue = findings.filter(f => {
+    if (f.status === 'closed') return false;
+    if (!f.recipients || f.recipients.length === 0) return false;
+    const created = new Date(f.createdAt || f.date);
+    const diffDays = Math.floor((now - created) / (1000 * 60 * 60 * 24));
+    return diffDays >= DAYS_THRESHOLD;
+  });
+
+  if (overdue.length === 0) {
+    showToast('✅ אין ממצאים פתוחים מעל 7 ימים');
+    return;
+  }
+
+  const confirm_msg = `נמצאו ${overdue.length} ממצאים פתוחים מעל 7 ימים.
+לשלוח תזכורת לכל הנמענים?`;
+  if (!confirm(confirm_msg)) return;
+
+  showToast(`📧 שולח תזכורות ל-${overdue.length} ממצאים...`);
+
+  let sent = 0;
+  let failed = 0;
+
+  for (const f of overdue) {
+    const updateLink = `${window.location.origin}${window.location.pathname}?update=${f.id}`;
+    const created = new Date(f.createdAt || f.date);
+    const diffDays = Math.floor((now - created) / (1000 * 60 * 60 * 24));
+
+    for (const email of f.recipients) {
+      try {
+        await emailjs.send(EMAILJS_SERVICE, EMAILJS_TEMPLATE, {
+          email:       email,
+          site:        f.site      || '—',
+          project:     f.project   || '—',
+          inspector:   f.inspector || '—',
+          date:        formatDate(f.date),
+          location:    f.location  || '—',
+          severity:    sevLabel(f.severity),
+          score:       f.score     || '—',
+          desc:        `⏰ תזכורת – ממצא זה פתוח כבר ${diffDays} ימים ומחכה לטיפול!
+
+${f.desc||'—'}`,
+          update_link: updateLink,
+        });
+        sent++;
+      } catch(err) {
+        console.error('Reminder error:', err);
+        failed++;
+      }
+    }
+  }
+
+  if (failed === 0) {
+    showToast(`✅ נשלחו ${sent} תזכורות בהצלחה`);
+  } else {
+    showToast(`⚠️ נשלח ${sent}, נכשל ${failed}`);
+  }
+}
+
 function exportCSV() {
   const headers = ['מזהה','אתר','מיזם','סוקר','תאריך','ממצא','מיקום','חומרה','ציון','סטטוס','נמענים'];
   const rows = findings.map(f => [
